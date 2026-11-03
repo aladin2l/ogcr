@@ -1,0 +1,20 @@
+CACHE MANIFEST
+
+CACHE:
+index.html
+appcache_manifest_generator.py
+afterglow.js
+core.js
+goldhen.bin
+int64.js
+jb.html
+jb.js
+launch.js
+mem.js
+patchset.bin
+ps4_offsets.js
+style.css
+logo_raw.png
+
+NETWORK:
+*
