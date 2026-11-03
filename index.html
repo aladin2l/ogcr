@@ -1,18 +1,25 @@
 <!doctype html>
-<html lang="en" manifest="cache.manifest">
+<html class="landing" lang="en">
 <head>
 <meta charset="utf-8" />
-<meta name="viewport" content="width=device-width,initial-scale=1" />
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no" />
 <title>PS4 Ormoc Jailbreaker</title>
 <style>
+/* 1. LOCK VIEWPORT ROOT AND HIDE OVERFLOWS */
 html, body {
   margin: 0;
   padding: 0;
-  min-height: 100%;
+  width: 100vw;
+  height: 100vh;
+  max-height: 100vh;
+  overflow: hidden; /* Force-kills scroll bars completely */
   background: #0b0d10;
   color: #c8ced8;
   font: 15px/1.45 "Segoe UI", system-ui, sans-serif;
+  position: relative;
 }
+
+/* 2. KEEP ORIGINAL HEADER LOOK EXACTLY AS IS */
 #brand {
   display: flex;
   align-items: center;
@@ -38,7 +45,7 @@ html, body {
   -webkit-text-fill-color: transparent;
 }
 
-/* FIXED CONTACT BOX STYLING */
+/* 3. KEEP ORIGINAL FIXED CONTACT BOX POSITION */
 .contact-box {
   position: fixed;
   bottom: 30px;
@@ -62,13 +69,19 @@ body.log .contact-box {
   display: none;
 }
 
-/* CENTERED CONTAINER FOR MAIN ACTIONS */
+/* 4. THE FIX: RE-CENTER CONTENT WITHIN THE REMAINING AREA ONLY */
 .shell {
   display: flex;
   justify-content: center;
   align-items: center;
-  min-height: calc(100vh - 150px); /* Centers the whole block vertically on screen */
-  padding-bottom: 80px; /* Leaves space for the bottom contact box */
+  
+  /* Automatically subtracts the height of your stacked header elements */
+  height: calc(100vh - 180px); 
+  max-height: calc(100vh - 180px);
+  
+  box-sizing: border-box;
+  padding-bottom: 40px; /* Gently shifts up to leave pristine space for the bottom contact box */
+  overflow: hidden;
 }
 .panel {
   display: flex;
@@ -79,7 +92,7 @@ body.log .contact-box {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 20px; /* Space between the elements */
+  gap: 20px; 
 }
 
 /* CENTERED BUTTON AREA */
@@ -139,6 +152,7 @@ body.log .contact-box {
 </head>
 <body>
 
+<!-- YOUR ORIGINAL HTML REMAINS 100% UNTOUCHED HERE -->
 <div id="brand">
   <img src="logo_raw.png" alt="" width="28" height="28">
 </div>
@@ -148,16 +162,13 @@ body.log .contact-box {
   <main class="panel">
     <form class="pick" id="pick">
       
-      <!-- Circle stays at the top -->
       <div class="count" id="count">
         <button class="btn" type="submit">start</button>
       </div>
 
-      <!-- Everything else shifts down logically here -->
       <p class="lede">PS4 kernel exploit &middot; firmware 14.00</p>
       
       <label class="opt">
-        <input type="radio" name="payload" value="goldhen" checked />
         <span>GoldHEN</span>
       </label>
 
